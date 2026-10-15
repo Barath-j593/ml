@@ -1,0 +1,202 @@
+import numpy as np
+import pandas as pd
+import matplotlib.pyplot as plt
+
+from sklearn.pipeline import Pipeline
+from sklearn.compose import ColumnTransformer
+from sklearn.impute import SimpleImputer
+from sklearn.preprocessing import StandardScaler, OneHotEncoder
+from sklearn.decomposition import PCA
+from sklearn.linear_model import LogisticRegression
+
+from sklearn.model_selection import (
+    train_test_split,
+    GridSearchCV,
+    StratifiedKFold,
+    RepeatedStratifiedKFold,
+    cross_val_score
+)
+
+from sklearn.metrics import accuracy_score
+from scipy.stats import shapiro, ttest_rel, wilcoxon
+
+# --------------------------------------------------
+# 1. Load and split data
+# --------------------------------------------------
+
+# df = pd.read_csv("data.csv")
+# X = df.drop("target", axis=1)
+# y = df["target"]
+
+num_cols = X.select_dtypes(include=np.number).columns.tolist()
+cat_cols = X.select_dtypes(exclude=np.number).columns.tolist()
+
+X_train, X_test, y_train, y_test = train_test_split(
+    X, y,
+    test_size=0.2,
+    random_state=42,
+    stratify=y
+)
+
+# --------------------------------------------------
+# 2. Preprocessing
+# --------------------------------------------------
+
+num_pipe = Pipeline([
+    ("imputer", SimpleImputer(strategy="median")),
+    ("scaler", StandardScaler())
+])
+
+cat_pipe = Pipeline([
+    ("imputer", SimpleImputer(strategy="most_frequent")),
+    ("encoder", OneHotEncoder(
+        handle_unknown="ignore",
+        sparse_output=False
+    ))
+])
+
+preprocessor = ColumnTransformer([
+    ("num", num_pipe, num_cols),
+    ("cat", cat_pipe, cat_cols)
+])
+
+# --------------------------------------------------
+# 3. Pipeline WITH PCA
+# --------------------------------------------------
+
+pipe_pca = Pipeline([
+    ("preprocessor", preprocessor),
+    ("pca", PCA(svd_solver="full")),
+    ("model", LogisticRegression(max_iter=2000))
+])
+
+params_pca = {
+    "pca__n_components": [0.90, 0.95, 0.99],
+    "model__C": [0.1, 1, 10]
+}
+
+grid_pca = GridSearchCV(
+    pipe_pca,
+    params_pca,
+    cv=5,
+    scoring="accuracy",
+    n_jobs=1
+)
+
+# --------------------------------------------------
+# 4. Pipeline WITHOUT PCA
+# --------------------------------------------------
+
+pipe_no_pca = Pipeline([
+    ("preprocessor", preprocessor),
+    ("model", LogisticRegression(max_iter=2000))
+])
+
+params_no_pca = {
+    "model__C": [0.1, 1, 10]
+}
+
+grid_no_pca = GridSearchCV(
+    pipe_no_pca,
+    params_no_pca,
+    cv=5,
+    scoring="accuracy",
+    n_jobs=1
+)
+
+# --------------------------------------------------
+# 5. Nested cross-validation scores
+# --------------------------------------------------
+
+outer_cv = RepeatedStratifiedKFold(
+    n_splits=5,
+    n_repeats=3,
+    random_state=42
+)
+
+scores_pca = cross_val_score(
+    grid_pca,
+    X_train,
+    y_train,
+    cv=outer_cv,
+    scoring="accuracy",
+    n_jobs=-1
+)
+
+scores_no_pca = cross_val_score(
+    grid_no_pca,
+    X_train,
+    y_train,
+    cv=outer_cv,
+    scoring="accuracy",
+    n_jobs=-1
+)
+
+print("PCA CV scores:", scores_pca)
+print("Without PCA CV scores:", scores_no_pca)
+
+print("Mean accuracy with PCA:", scores_pca.mean())
+print("Mean accuracy without PCA:", scores_no_pca.mean())
+
+# --------------------------------------------------
+# 6. Fit both tuned models on full training data
+# --------------------------------------------------
+
+grid_pca.fit(X_train, y_train)
+grid_no_pca.fit(X_train, y_train)
+
+print("\nBest PCA parameters:", grid_pca.best_params_)
+print("Best no-PCA parameters:", grid_no_pca.best_params_)
+
+pred_pca = grid_pca.predict(X_test)
+pred_no_pca = grid_no_pca.predict(X_test)
+
+print("\nTest accuracy with PCA:",
+      accuracy_score(y_test, pred_pca))
+
+print("Test accuracy without PCA:",
+      accuracy_score(y_test, pred_no_pca))
+
+# --------------------------------------------------
+# 7. Normality test on paired score differences
+# --------------------------------------------------
+
+diff = scores_pca - scores_no_pca
+
+stat, p = shapiro(diff)
+
+print("\nShapiro-Wilk statistic:", stat)
+print("Shapiro-Wilk p-value:", p)
+
+if p > 0.05:
+    print("Cannot reject normality of paired differences")
+else:
+    print("Evidence of non-normal paired differences")
+
+# --------------------------------------------------
+# 8. Paired t-test
+# --------------------------------------------------
+
+t_stat, t_p = ttest_rel(scores_pca, scores_no_pca)
+
+print("\nPaired t-test statistic:", t_stat)
+print("Paired t-test p-value:", t_p)
+
+if t_p < 0.05:
+    print("Paired t-test: Significant difference")
+else:
+    print("Paired t-test: No significant difference detected")
+
+# --------------------------------------------------
+# 9. Wilcoxon signed-rank test
+# --------------------------------------------------
+
+w_stat, w_p = wilcoxon(scores_pca, scores_no_pca)
+
+print("\nWilcoxon statistic:", w_stat)
+print("Wilcoxon p-value:", w_p)
+
+if w_p < 0.05:
+    print("Wilcoxon: Significant difference")
+else:
+    print("Wilcoxon: No significant difference detected")
